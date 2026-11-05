@@ -1,0 +1,19 @@
+{
+  "files": ["out"],
+  "appId": "com.apishow.desktop",
+  "productName": "API Show",
+  "directories": {
+    "output": "dist"
+  },
+  "electronDist": "node_modules/electron/dist",
+  "win": {
+    "target": [{ "target": "portable", "arch": ["x64"] }, { "target": "nsis", "arch": ["x64"] }],
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "shortcutName": "API Show"
+  }
+}

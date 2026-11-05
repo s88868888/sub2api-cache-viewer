@@ -1,0 +1,261 @@
+export type SiteKind = 'sub2api' | 'newapi'
+
+export interface GroupOption {
+  id: string
+  name: string
+}
+
+/**
+ * 归一化后的单条用量记录。
+ *
+ * 两个站点对 input/prompt 的口径不同，适配器必须在写入本结构前完成换算，
+ * 使 inputTokens 恒等于「未命中缓存的输入」。
+ */
+export interface UsageRecord {
+  id: string
+  /** epoch 毫秒 */
+  createdAt: number
+  model: string
+  groupName: string
+  endpoint: string
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  totalTokens: number
+  cost: number
+  actualCost: number
+  /**
+   * 折算成美元的成本，跨站对比只能用它。
+   * new-api 拿不到 quota_per_unit 时为 null —— 此时该站的成本列不参与对比，
+   * 而不是拿 quota 当美元混算。
+   */
+  costUsd: number | null
+  durationMs: number | null
+  firstTokenMs: number | null
+  stream: boolean | null
+  /** 0..1 */
+  cacheRate: number
+}
+
+export interface UsageSummary {
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  totalTokens: number
+  cost: number
+  actualCost: number
+  /** 0..1，按 token 加权而非逐条平均 */
+  cacheRate: number
+}
+
+export function createEmptySummary(): UsageSummary {
+  return {
+    requests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+    actualCost: 0,
+    cacheRate: 0
+  }
+}
+
+export interface QueryFilters {
+  page: number
+  pageSize: number
+  groupId: string | null
+  model: string | null
+  keyword: string | null
+  startMs: number | null
+  endMs: number | null
+  /** 对比采样会连续翻很多页，没必要每页都去拉一次余额 */
+  skipBalance?: boolean
+}
+
+/**
+ * 账户余额。sub2api 直接给美元，new-api 给 quota 整数，
+ * 需要站点的 quota_per_unit 才能换算成美元，换不出来时只展示原生值。
+ */
+export interface SiteBalance {
+  raw: number
+  unit: 'USD' | 'quota'
+  usd: number | null
+}
+
+export interface QueryResult {
+  items: UsageRecord[]
+  total: number
+  page: number
+  pageSize: number
+  summary: UsageSummary
+  /** 汇总仅由当前页明细累加得出，而非服务端全量统计 */
+  summaryIsPageScoped: boolean
+  balance: SiteBalance | null
+}
+
+export interface LoginParams {
+  baseUrl: string
+  username: string
+  password: string
+  totp?: string
+  /**
+   * password = 直接调登录接口
+   * browser  = 打开内置浏览器让人机验证通过后截获令牌
+   * jwt      = 使用用户粘贴的面板 JWT
+   */
+  mode: 'password' | 'browser' | 'jwt'
+  jwt?: string
+  kind?: SiteKind
+}
+
+export interface ConnectionInfo {
+  kind: SiteKind
+  baseUrl: string
+  account: string
+  groups: GroupOption[]
+}
+
+/**
+ * 已保存的站点。密文与 JWT 只留在主进程，
+ * 渲染层只看 hasPassword / hasJwt，避免凭据跨 IPC 回流。
+ */
+export interface SiteProfile {
+  id: string
+  /** 用户自定义名称，默认取域名 */
+  label: string
+  baseUrl: string
+  kind: SiteKind
+  account: string
+  loginMode: 'password' | 'jwt'
+  username: string
+  hasPassword: boolean
+  hasJwt: boolean
+  lastUsedAt: number | null
+}
+
+export interface SiteDraft {
+  id?: string
+  label: string
+  baseUrl: string
+  kind: SiteKind
+  account: string
+  loginMode: 'password' | 'jwt'
+  username: string
+  /** 仅在用户改动时下发；空字符串表示清除 */
+  password?: string
+  jwt?: string
+}
+
+export interface SiteState {
+  profile: SiteProfile
+  connected: boolean
+}
+
+/** 单个站点的一次查询结果；失败也占一条，便于合并视图如实展示。 */
+export interface SiteResult {
+  siteId: string
+  label: string
+  kind: SiteKind
+  error: string | null
+  result: QueryResult | null
+}
+
+export interface AggregateResult {
+  sites: SiteResult[]
+  /** 跨站 token 加权合并；费用单位不同不参与合并 */
+  merged: UsageSummary
+  okCount: number
+  failedCount: number
+}
+
+/** 明细表可隐藏的列 */
+export type ColumnKey =
+  | 'site'
+  | 'model'
+  | 'group'
+  | 'input'
+  | 'output'
+  | 'cacheWrite'
+  | 'cacheRead'
+  | 'cacheRate'
+  | 'total'
+  | 'cost'
+  | 'ttft'
+  | 'tps'
+  | 'duration'
+
+export type Theme = 'light' | 'dark'
+
+export interface Prefs {
+  /** 侧栏是否折叠 */
+  sidebarCollapsed: boolean
+  /** 被隐藏的列，空数组表示全部显示 */
+  hiddenColumns: ColumnKey[]
+  /** 未设置时跟随系统 */
+  theme: Theme | null
+}
+
+export const DEFAULT_PREFS: Prefs = {
+  sidebarCollapsed: false,
+  hiddenColumns: [],
+  theme: null
+}
+
+/** 一个对比列 = 某站点的某个分组 */
+export interface CompareTarget {
+  siteId: string
+  groupName: string
+}
+
+export interface CompareColumn {
+  siteId: string
+  siteLabel: string
+  groupName: string
+  kind: SiteKind
+  requests: number
+  totalTokens: number
+  /** 0..1 */
+  cacheRate: number
+  /** 未命中输入占输入侧的比例，用来解释缓存率为什么低 */
+  uncachedShare: number
+  costUsd: number | null
+  pricePerMTokens: number | null
+  costPerRequest: number | null
+  tokensPerRequest: number
+  medianTps: number | null
+  /** 参与 TPS 统计的请求数（输出量太小的不计入） */
+  tpsSamples: number
+  medianTtftMs: number | null
+  /** 样本触到上限，统计基于截断后的数据 */
+  truncated: boolean
+}
+
+export interface SiteGroupOption {
+  name: string
+  requests: number
+}
+
+export interface SiteSamples {
+  siteId: string
+  label: string
+  kind: SiteKind
+  /** false 表示该站成本无法折算成美元，成本类指标会留空 */
+  costUsdKnown: boolean
+  groups: SiteGroupOption[]
+  error: string | null
+}
+
+export interface CompareResult {
+  sites: SiteSamples[]
+  columns: CompareColumn[]
+  sampleCap: number
+}
+
+export type IpcResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; error: { message: string; kind: 'auth' | 'network' | 'shape' | 'unknown'; status?: number } }

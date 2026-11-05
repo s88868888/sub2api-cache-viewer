@@ -1,0 +1,205 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-alt: #fbfbfc;
+  --border: #e3e6ea;
+  --border-strong: #d0d5dd;
+  --text: #1a1d21;
+  --text-dim: #61687a;
+  --text-faint: #6d7787;
+  --accent: #2f6fed;
+  --accent-soft: #eaf1ff;
+  --good: #12805c;
+  --good-soft: #e6f5ef;
+  --warn: #a15608;
+  --warn-soft: #fdf2e3;
+  --bad: #b3261e;
+  --row-h: 30px;
+
+  /* 组件里原本写死的颜色，全部走 token，暗色才有得切 */
+  --row-hover: #f3f7ff;
+  --tint-warn: #fff8e6;
+  --tint-warn-hover: #fff2d1;
+  --tint-bad: #fdecea;
+  --tint-bad-hover: #fbdcd9;
+  --sel-border: #c9dbff;
+  --on-accent: #ffffff;
+  --knob: #ffffff;
+  --scroll-thumb: #c9cfd8;
+  --scroll-thumb-hover: #aeb6c2;
+  --mask: rgba(20, 24, 31, 0.34);
+  --shadow-pop: 0 12px 28px rgba(16, 24, 40, 0.18);
+  --shadow-dialog: 0 18px 44px rgba(16, 24, 40, 0.22);
+  --shadow-jump: 0 3px 10px rgba(16, 24, 40, 0.16);
+  --shadow-jump-hover: 0 6px 16px rgba(16, 24, 40, 0.2);
+
+  color-scheme: light;
+}
+
+/**
+ * 暗色不是把颜色取反：底色用带蓝的深灰而不是纯黑，
+ * 语义色（好/警/坏）整体提亮，否则在深底上对比度会掉到读不出来。
+ */
+:root[data-theme='dark'] {
+  --bg: #13161b;
+  --panel: #1a1e25;
+  --panel-alt: #21262e;
+  --border: #2b3038;
+  --border-strong: #3b4250;
+  --text: #e7eaf0;
+  --text-dim: #a6aebc;
+  --text-faint: #7a838f;
+  --accent: #6199ff;
+  --accent-soft: #1b2740;
+  --good: #3ec79c;
+  --good-soft: #12302a;
+  --warn: #e0973f;
+  --warn-soft: #2f2412;
+  --bad: #f0736b;
+
+  --row-hover: #232935;
+  --tint-warn: #2d2412;
+  --tint-warn-hover: #392d18;
+  --tint-bad: #331a1a;
+  --tint-bad-hover: #422020;
+  --sel-border: #33538a;
+  /* 深色下白字压在亮蓝上只有 2.8:1，改用深墨蓝字（6.5:1），同时保住强调色的鲜亮度 */
+  --on-accent: #0d1524;
+  --knob: #cfd6e0;
+  --scroll-thumb: #3b4250;
+  --scroll-thumb-hover: #4c5566;
+  --mask: rgba(0, 0, 0, 0.58);
+  --shadow-pop: 0 12px 28px rgba(0, 0, 0, 0.55);
+  --shadow-dialog: 0 18px 44px rgba(0, 0, 0, 0.6);
+  --shadow-jump: 0 3px 10px rgba(0, 0, 0, 0.5);
+  --shadow-jump-hover: 0 6px 16px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-family: 'Cascadia Mono', 'Consolas', 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.field > label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.field input,
+.field select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--panel);
+  outline: none;
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.btn {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--on-accent);
+  /* 筛选栏挤的时候宁可换整行，也不能把按钮文字压成两行 */
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn.ghost {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.tag.sub2api {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tag.newapi {
+  background: var(--good-soft);
+  color: var(--good);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border: 2px solid var(--panel);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
