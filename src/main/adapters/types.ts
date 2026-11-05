@@ -15,6 +15,10 @@ export type {
   SiteKind,
   SiteResult,
   SiteSamples,
+  ScanResult,
+  SiteScan,
+  TrendPoint,
+  TrendSeries,
   UsageRecord,
   UsageSummary
 } from '../../shared/contracts'

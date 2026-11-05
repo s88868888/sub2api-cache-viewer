@@ -42,6 +42,7 @@ const IPC = {
   prefsGet: 'prefs:get',
   prefsSave: 'prefs:save',
   compare: 'site:compare',
+  scan: 'site:scan',
   openPanel: 'site:open-panel',
   appMeta: 'app:meta'
 } as const
@@ -132,6 +133,27 @@ async function paramsFor(site: StoredSite): Promise<LoginParams> {
     mode: 'password',
     kind: site.kind
   }
+}
+
+/**
+ * 组装参与对比/扫描的站点。凭据不可用的站点带着原因返回，
+ * 而不是让整批请求一起失败 —— 界面需要照常列出这一站并说明它为什么缺席。
+ */
+async function siteInputs(ids: string[]): Promise<CompareSiteInput[]> {
+  const out: CompareSiteInput[] = []
+  for (const site of ids.map(mustGet)) {
+    try {
+      out.push({ siteId: site.id, label: site.label, params: await paramsFor(site) })
+    } catch (err) {
+      out.push({
+        siteId: site.id,
+        label: site.label,
+        params: { baseUrl: site.baseUrl, username: '', password: '', mode: 'password' },
+        paramsError: err instanceof SiteError ? err.message : String(err)
+      })
+    }
+  }
+  return out
 }
 
 function registerIpc(): void {
@@ -240,8 +262,7 @@ function registerIpc(): void {
 
   /**
    * 对比要列出所有站点的可选分组，所以入参只有已选列和时间范围，
-   * 站点集合由主进程自己从已保存的站点取。凭据不可用的站点带着原因返回，
-   * 而不是让整次对比一起失败。
+   * 站点集合由主进程自己从已保存的站点取。
    */
   handle(
     IPC.compare,
@@ -251,25 +272,33 @@ function registerIpc(): void {
       endMs: number | null
       model: string | null
     }) => {
-      const sites: CompareSiteInput[] = []
-      for (const site of store.load()) {
-        try {
-          sites.push({ siteId: site.id, label: site.label, params: await paramsFor(site) })
-        } catch (err) {
-          sites.push({
-            siteId: site.id,
-            label: site.label,
-            params: { baseUrl: site.baseUrl, username: '', password: '', mode: 'password' },
-            paramsError: err instanceof SiteError ? err.message : String(err)
-          })
-        }
-      }
+      const sites = await siteInputs(store.load().map((s) => s.id))
       return service.compare({
         sites,
         targets: arg.targets,
         startMs: arg.startMs,
         endMs: arg.endMs,
         model: arg.model
+      })
+    }
+  )
+
+  handle(
+    IPC.scan,
+    async (arg: {
+      siteIds: string[]
+      groupId: string | null
+      model: string | null
+      startMs: number | null
+      endMs: number | null
+    }) => {
+      const sites = await siteInputs(arg.siteIds)
+      return service.scan({
+        sites,
+        groupId: arg.groupId,
+        model: arg.model,
+        startMs: arg.startMs,
+        endMs: arg.endMs
       })
     }
   )

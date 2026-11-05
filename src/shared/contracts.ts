@@ -173,6 +173,50 @@ export interface AggregateResult {
   failedCount: number
 }
 
+/**
+ * 全量扫描的逐日趋势点。
+ * requests 为 0 表示这一天没有数据 —— 界面按断线处理，
+ * 否则一个空档日会被画成 0% 命中率，看着像缓存彻底失效。
+ */
+export interface TrendPoint {
+  /** 本地日期 YYYY-MM-DD */
+  day: string
+  requests: number
+  /** 0..1 */
+  cacheRate: number
+}
+
+/** 一条趋势线：单站点视图按分组分线，合并视图按站点分线 */
+export interface TrendSeries {
+  key: string
+  label: string
+  /** 与 ScanResult.days 等长同序 */
+  points: TrendPoint[]
+}
+
+/** 单站点的全量扫描结果；失败也占一条，便于合并视图如实展示 */
+export interface SiteScan {
+  siteId: string
+  label: string
+  kind: SiteKind
+  error: string | null
+  summary: UsageSummary | null
+  /** 实际参与统计的记录数，可能小于服务端 total */
+  sampled: number
+  truncated: boolean
+}
+
+export interface ScanResult {
+  sites: SiteScan[]
+  /** 与 aggregate 同一合并口径：token 加权，混站时费用不合并 */
+  merged: UsageSummary
+  okCount: number
+  failedCount: number
+  days: string[]
+  series: TrendSeries[]
+  sampleCap: number
+}
+
 /** 明细表可隐藏的列 */
 export type ColumnKey =
   | 'site'

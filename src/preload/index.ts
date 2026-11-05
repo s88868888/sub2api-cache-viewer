@@ -8,6 +8,7 @@ import type {
   Prefs,
   QueryFilters,
   QueryResult,
+  ScanResult,
   SiteDraft,
   SiteKind,
   SiteProfile,
@@ -60,6 +61,14 @@ const api = {
     endMs: number | null
     model: string | null
   }): Promise<IpcResult<CompareResult>> => ipcRenderer.invoke('site:compare', arg),
+
+  scan: (arg: {
+    siteIds: string[]
+    groupId: string | null
+    model: string | null
+    startMs: number | null
+    endMs: number | null
+  }): Promise<IpcResult<ScanResult>> => ipcRenderer.invoke('site:scan', arg),
 
   openPanel: (
     siteId: string

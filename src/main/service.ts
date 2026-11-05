@@ -16,23 +16,28 @@ import {
   LoginParams,
   QueryFilters,
   QueryResult,
+  ScanResult,
   SiteError,
   SiteKind,
   SiteResult,
   SiteSamples,
+  SiteScan,
   SiteSession,
+  UsageRecord,
   UsageSummary,
   cacheRateOf,
   detectSite,
   emptySummary,
   newapiLogin,
   newapiQuery,
+  summarize,
   sub2apiLogin,
   sub2apiLoginWithJwt,
   sub2apiPanelSeed,
   sub2apiQuery,
   type PanelSeed
 } from './adapters'
+import { buildSeries, dayAxis } from './trend'
 
 export interface PanelCredential {
   kind: SiteKind
@@ -64,6 +69,15 @@ export interface CompareInput {
   startMs: number | null
   endMs: number | null
   model: string | null
+}
+
+/** 全量扫描的入参：站点集合 + 一份筛选条件（分页字段在这里没有意义） */
+export interface ScanInput {
+  sites: CompareSiteInput[]
+  groupId: string | null
+  model: string | null
+  startMs: number | null
+  endMs: number | null
 }
 
 /** 采样缓存寿命：改选择项时不该重新打接口，但也不能拿着一小时前的数据对比 */
@@ -208,7 +222,9 @@ export class GatewayService {
     const ok = sites.filter((s) => s.result)
     return {
       sites,
-      merged: mergeSummaries(ok),
+      merged: mergeSummaries(
+        ok.map((s) => ({ kind: s.kind, summary: s.result?.summary ?? null }))
+      ),
       okCount: ok.length,
       failedCount: sites.length - ok.length
     }
@@ -225,7 +241,7 @@ export class GatewayService {
       input.sites.map(async (site): Promise<Outcome> => {
         if (site.paramsError) return { ok: false, error: site.paramsError }
         try {
-          return { ok: true, data: await this.sampleFor(site, input) }
+          return { ok: true, data: await this.sampleOf(site, input) }
         } catch (err) {
           return { ok: false, error: err instanceof SiteError ? err.message : String(err) }
         }
@@ -268,8 +284,15 @@ export class GatewayService {
     return { sites, columns, sampleCap: SAMPLE_CAP }
   }
 
-  private async sampleFor(site: CompareSiteInput, input: CompareInput): Promise<Sample> {
-    const key = `${site.siteId}|${input.startMs ?? 'all'}|${input.endMs ?? 'now'}|${input.model ?? ''}`
+  /**
+   * 逐页拉满时间范围。对比和全量扫描用同一把 key 缓存，
+   * 所以在对比里已经拉过的站点，切回明细看全量时不会再打一遍接口。
+   */
+  private async sampleOf(
+    site: CompareSiteInput,
+    window: { startMs: number | null; endMs: number | null; model: string | null }
+  ): Promise<Sample> {
+    const key = `${site.siteId}|${window.startMs ?? 'all'}|${window.endMs ?? 'now'}|${window.model ?? ''}`
     const cached = this.samples.get(key)
     if (cached && Date.now() - cached.at < SAMPLE_TTL_MS) return cached.data
 
@@ -284,16 +307,97 @@ export class GatewayService {
           page,
           pageSize,
           groupId: null,
-          model: input.model,
+          model: window.model,
           keyword: null,
-          startMs: input.startMs,
-          endMs: input.endMs,
+          startMs: window.startMs,
+          endMs: window.endMs,
           skipBalance: true
         })
     )
 
     this.samples.set(key, { at: Date.now(), data: sample })
     return sample
+  }
+
+  /**
+   * 全量扫描：把时间范围内的记录拉完再汇总，用来替掉「只累加当前页」的汇总。
+   * 明细表本身还是分页的，这里只负责让顶部那个数字覆盖整个区间。
+   */
+  async scan(input: ScanInput): Promise<ScanResult> {
+    type Outcome = { ok: true; data: Sample } | { ok: false; error: string }
+
+    const outcomes: Outcome[] = await Promise.all(
+      input.sites.map(async (site): Promise<Outcome> => {
+        if (site.paramsError) return { ok: false, error: site.paramsError }
+        try {
+          return { ok: true, data: await this.sampleOf(site, input) }
+        } catch (err) {
+          return { ok: false, error: err instanceof SiteError ? err.message : String(err) }
+        }
+      })
+    )
+
+    const sites: SiteScan[] = outcomes.map((outcome, index) => {
+      const site = input.sites[index]
+      if (!outcome.ok) {
+        return {
+          siteId: site.siteId,
+          label: site.label,
+          kind: site.params.kind ?? 'sub2api',
+          error: outcome.error,
+          summary: null,
+          sampled: 0,
+          truncated: false
+        }
+      }
+      const records = input.groupId
+        ? outcome.data.records.filter((r) => r.groupName === input.groupId)
+        : outcome.data.records
+      return {
+        siteId: site.siteId,
+        label: site.label,
+        kind: outcome.data.kind,
+        error: null,
+        summary: summarize(records),
+        sampled: records.length,
+        truncated: outcome.data.truncated
+      }
+    })
+
+    const ok = sites.filter((s) => s.summary)
+    const recordsOf = (siteId: string): UsageRecord[] => {
+      const index = input.sites.findIndex((s) => s.siteId === siteId)
+      const outcome = index < 0 ? undefined : outcomes[index]
+      if (!outcome || !outcome.ok) return []
+      const list = outcome.data.records
+      return input.groupId ? list.filter((r) => r.groupName === input.groupId) : list
+    }
+
+    const flat = ok.flatMap((s) => recordsOf(s.siteId))
+    const days = dayAxis(flat)
+    // 单站点时按分组分线才有意义；合并视图下每个站点一条线
+    const series = buildSeries(
+      input.sites.length === 1
+        ? topGroups(ok[0] ? recordsOf(ok[0].siteId) : []).map((g) => ({
+            key: g.name,
+            label: g.name,
+            records: g.records
+          }))
+        : ok.map((s) => ({ key: s.siteId, label: s.label, records: recordsOf(s.siteId) })),
+      days
+    )
+
+    return {
+      sites,
+      merged: mergeSummaries(
+        ok.map((s) => ({ kind: s.kind, summary: s.summary }))
+      ),
+      okCount: ok.length,
+      failedCount: sites.length - ok.length,
+      days,
+      series,
+      sampleCap: SAMPLE_CAP
+    }
   }
 
   /**
@@ -326,11 +430,12 @@ export class GatewayService {
 /**
  * 跨站合并。token 是同一量纲可以直接相加，缓存率按 token 加权重算；
  * 费用在 sub2api 是美元、new-api 是 quota，混站时不合并，避免得出无意义的数字。
+ * 分页汇总和全量扫描都走这里，两条路径的合并口径必须一致。
  */
-function mergeSummaries(sites: SiteResult[]): UsageSummary {
+function mergeSummaries(entries: Array<{ kind: SiteKind; summary: UsageSummary | null }>): UsageSummary {
   const merged = emptySummary()
-  for (const site of sites) {
-    const s = site.result?.summary
+  for (const entry of entries) {
+    const s = entry.summary
     if (!s) continue
     merged.requests += s.requests
     merged.inputTokens += s.inputTokens
@@ -346,13 +451,26 @@ function mergeSummaries(sites: SiteResult[]): UsageSummary {
     merged.cacheReadTokens
   )
 
-  const kinds = new Set(sites.map((s) => s.kind))
+  const kinds = new Set(entries.map((e) => e.kind))
   if (kinds.size === 1) {
-    for (const site of sites) {
-      merged.cost += site.result?.summary.cost ?? 0
-      merged.actualCost += site.result?.summary.actualCost ?? 0
+    for (const entry of entries) {
+      merged.cost += entry.summary?.cost ?? 0
+      merged.actualCost += entry.summary?.actualCost ?? 0
     }
   }
 
   return merged
+}
+
+/** 按请求数排序的分组记录，用来决定趋势图画哪几条线 */
+function topGroups(records: UsageRecord[]): Array<{ name: string; records: UsageRecord[] }> {
+  const buckets = new Map<string, UsageRecord[]>()
+  for (const r of records) {
+    const list = buckets.get(r.groupName)
+    if (list) list.push(r)
+    else buckets.set(r.groupName, [r])
+  }
+  return [...buckets.entries()]
+    .map(([name, list]) => ({ name, records: list }))
+    .sort((a, b) => b.records.length - a.records.length)
 }

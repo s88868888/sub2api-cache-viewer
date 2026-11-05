@@ -8,7 +8,9 @@ import type {
   GroupOption,
   Prefs,
   QueryResult,
+  ScanResult,
   SiteProfile,
+  SiteResult,
   SiteState,
   Theme
 } from '../../shared/contracts'
@@ -20,6 +22,7 @@ import SettingsPanel from './components/SettingsPanel.vue'
 import SummaryBar from './components/SummaryBar.vue'
 import UsageTable from './components/UsageTable.vue'
 import CompareView from './components/CompareView.vue'
+import TrendChart from './components/TrendChart.vue'
 import { toRows, type UsageRow } from './lib/rows'
 import { annotate, countBySeverity, underSampledGroups, type AnomalyRow } from './lib/anomaly'
 import { fmtInt } from './lib/format'
@@ -97,11 +100,61 @@ const isCompare = computed(() => selected.value === 'compare')
 const compareTargets = ref<CompareTarget[]>([])
 const compareResult = ref<CompareResult | null>(null)
 const compareLoading = ref(false)
+
+/** 全量扫描的结果：顶部汇总与趋势图都改用它，明细表本身仍是分页的 */
+const scan = ref<ScanResult | null>(null)
+const scanLoading = ref(false)
+const scanKey = ref('')
+const trendOpen = ref(true)
 const current = computed(() => states.value.find((s) => s.profile.id === selected.value) ?? null)
 
-const summary = computed(() =>
-  isAll.value ? (agg.value?.merged ?? createEmptySummary()) : (single.value?.summary ?? createEmptySummary())
+const scannedSummary = computed(() => {
+  const s = scan.value
+  if (!s) return null
+  if (isAll.value) return s.merged
+  return s.sites.find((x) => x.siteId === selected.value)?.summary ?? null
+})
+
+const summary = computed(
+  () =>
+    scannedSummary.value ??
+    (isAll.value
+      ? (agg.value?.merged ?? createEmptySummary())
+      : (single.value?.summary ?? createEmptySummary()))
 )
+
+const scannedRequests = computed(() => {
+  const s = scan.value
+  if (!s) return 0
+  return isAll.value
+    ? s.sites.reduce((sum, x) => sum + x.sampled, 0)
+    : (s.sites.find((x) => x.siteId === selected.value)?.sampled ?? 0)
+})
+
+/**
+ * 徽章要说清这个数字到底覆盖了什么：没扫描时只有当前页，
+ * 扫描后是整个时间范围，并且如实标出采样是否被上限截断。
+ */
+const scopeLabel = computed(() => {
+  if (!scan.value) return isAll.value ? '全部站点 · 当前页' : '当前页'
+  const truncated = scan.value.sites.some((x) => x.truncated)
+  return `全量 ${fmtInt(scannedRequests.value)} 条${truncated ? ' · 已截断' : ''}`
+})
+
+/**
+ * 分站小计跟着扫描口径走。顶部写「全量 130 条」而下面一行还停在当前页的 100 条，
+ * 两个数字并排出现就是自相矛盾。
+ */
+const breakdownSites = computed<SiteResult[]>(() => {
+  const list = agg.value?.sites ?? []
+  const s = scan.value
+  if (!s) return list
+  return list.map((row) => {
+    const scanned = s.sites.find((x) => x.siteId === row.siteId)
+    if (!scanned || !row.result) return row
+    return { ...row, result: { ...row.result, summary: scanned.summary ?? row.result.summary } }
+  })
+})
 
 const rows = computed<AnomalyRow[]>(() => {
   const base: UsageRow[] = isAll.value
@@ -263,6 +316,37 @@ async function run(opts: { keepScroll?: boolean } = {}): Promise<void> {
   }
 }
 
+/** 扫描结果对应哪一套筛选条件；条件变了就该作废，不能拿旧范围的数据顶着 */
+function currentKey(): string {
+  return `${isAll.value ? 'all' : selected.value}|${filters.range}|${filters.groupId}|${filters.model.trim()}`
+}
+
+/** 下拉框选的是分组 id，而记录里只有名字，扫描要按名字过滤 */
+function groupNameOf(id: string): string | null {
+  if (!id) return null
+  return groups.value.find((g) => g.id === id)?.name ?? null
+}
+
+async function runScan(): Promise<void> {
+  if (!states.value.length || isCompare.value) return
+  scanLoading.value = true
+  const w = rangeWindow()
+  const res = await window.apiShow.scan({
+    siteIds: isAll.value ? states.value.map((s) => s.profile.id) : [selected.value],
+    groupId: isAll.value ? null : groupNameOf(filters.groupId),
+    model: filters.model.trim() || null,
+    startMs: w.startMs,
+    endMs: w.endMs
+  })
+  scanLoading.value = false
+  if (res.ok) {
+    scan.value = res.data
+    scanKey.value = currentKey()
+  } else {
+    error.value = res.error.message
+  }
+}
+
 /** 令牌过期时继续自动刷只会反复撞墙，直接停掉并说明原因 */
 function fail(kind: string, message: string): void {
   error.value = message
@@ -292,9 +376,14 @@ function startAuto(): void {
   stopAuto()
   timer = setInterval(() => {
     // 上一轮还没回来就跳过这次，避免请求堆积
-    if (loading.value || compareLoading.value) return
-    if (isCompare.value) void runCompare()
-    else void run({ keepScroll: true })
+    if (loading.value || compareLoading.value || scanLoading.value) return
+    if (isCompare.value) {
+      void runCompare()
+      return
+    }
+    void run({ keepScroll: true })
+    // 已经扫过就让它跟着刷新继续有效；没扫过的不擅自变成全量
+    if (scan.value && scanKey.value === currentKey()) void runScan()
   }, refreshSec.value * 1000)
 }
 
@@ -307,6 +396,7 @@ async function select(id: string): Promise<void> {
   groups.value = []
   single.value = null
   agg.value = null
+  scan.value = null
   if (id === 'compare') await runCompare()
   else await run()
 }
@@ -347,6 +437,7 @@ function applyFilter(): void {
     return
   }
   filters.page = 1
+  if (scan.value && scanKey.value !== currentKey()) scan.value = null
   void run()
 }
 
@@ -526,6 +617,19 @@ async function remove(id: string): Promise<void> {
           >
             {{ isCompare ? '重新采样' : '查询' }}
           </button>
+          <button
+            v-if="!isCompare"
+            class="btn ghost"
+            :disabled="loading || scanLoading || !states.length"
+            :title="
+              scan
+                ? '按当前时间范围重新扫描全部记录'
+                : '把时间范围内的记录全部拉完再汇总；默认的汇总只累加当前这一页'
+            "
+            @click="runScan"
+          >
+            {{ scanLoading ? '扫描中…' : scan ? '重新扫描' : '全量统计' }}
+          </button>
         </section>
 
         <p v-if="error" class="err">{{ error }}</p>
@@ -545,7 +649,7 @@ async function remove(id: string): Promise<void> {
         <SummaryBar
           :summary="summary"
           :cost-mode="costMode"
-          :scope-label="isAll ? '全部站点' : '当前页'"
+          :scope-label="scopeLabel"
           :balance="balance"
           :show-balance="!isAll"
         />
@@ -557,7 +661,23 @@ async function remove(id: string): Promise<void> {
               {{ agg.okCount }} 个成功<span v-if="agg.failedCount"> · {{ agg.failedCount }} 个失败</span>
             </small>
           </div>
-          <SiteBreakdown :sites="agg?.sites ?? []" />
+          <SiteBreakdown :sites="breakdownSites" />
+        </template>
+
+        <template v-if="scan">
+          <div class="sec-head">
+            <span>缓存率趋势</span>
+            <small class="dim">
+              {{ isAll ? '每个站点一条线' : '每个分组一条线' }} · 共 {{ scan.days.length }} 天
+            </small>
+            <small v-if="scan.failedCount" class="dim">
+              {{ scan.failedCount }} 个站点没能扫描，未计入
+            </small>
+            <button class="btn ghost sm trend-fold" @click="trendOpen = !trendOpen">
+              {{ trendOpen ? '收起' : '展开' }}
+            </button>
+          </div>
+          <TrendChart v-if="trendOpen" :days="scan.days" :series="scan.series" />
         </template>
 
         <div class="sec-head">
@@ -816,6 +936,10 @@ async function remove(id: string): Promise<void> {
   font-weight: 600;
   color: var(--text-dim);
   flex: 0 0 auto;
+}
+
+.trend-fold {
+  margin-left: auto;
 }
 
 .count {
