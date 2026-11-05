@@ -32,10 +32,9 @@ export function dayAxis(records: UsageRecord[]): string[] {
   if (Number.isNaN(start) || Number.isNaN(end)) return sorted
 
   const days: string[] = []
-  for (let t = start; t <= end && days.length < MAX_DAYS; t += DAY_MS) {
-    days.push(localDay(t))
-  }
-  // 跨度超过上限时保留最近的 MAX_DAYS 天，早段直接舍弃
+  for (let t = start; t <= end; t += DAY_MS) days.push(localDay(t))
+  // 跨度超过上限时保留最近的 MAX_DAYS 天。循环里就 break 会留下最旧的一段，
+  // 那是「半年前那阵子」而不是用户真正想看的最近情况。
   return days.slice(-MAX_DAYS)
 }
 
