@@ -4,6 +4,16 @@ Windows 桌面工具：只输入中转站点的地址和凭据，就能拿到每
 
 做这个工具的起因是：不少 [sub2api](https://github.com/Wei-Shaw/sub2api) / new-api 站点的用量页只给你 `总 tokens`，不给缓存率，或者给的口径和你以为的不一样。而它们的用户态接口 `/api/v1/usage` 其实已经把四个字段都返回了——工具做的就是把口径统一，然后算给你看。
 
+## 下载
+
+去 [Releases](https://github.com/s88868888/sub2api-cache-viewer/releases/tag/v0.1.0) 拿 `API.Show-0.1.0-x64.exe`（便携版，单文件免安装，x64，105 MiB）：
+
+```
+SHA256  e7ca9c1ede376c8b1479770d9d1721cbac8ebc06295371886b4567e20a9f8625
+```
+
+没有代码签名证书，首次运行 Windows SmartScreen 会提示「未知发布者」，需要点「更多信息 → 仍要运行」。介意的是否签名就直接自己构建，见下面的[开发](#开发)。
+
 ## 缓存率的口径
 
 分母必须带上**缓存写入**，否则写入密集的时段会显得命中率虚高：
