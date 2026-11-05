@@ -85,7 +85,7 @@ async function submit(): Promise<void> {
           <div class="line">
             <input
               v-model="baseUrl"
-              placeholder="https://luluai.win"
+              placeholder="https://your-relay-site.com"
               spellcheck="false"
               @blur="detect"
               @keyup.enter="submit"
