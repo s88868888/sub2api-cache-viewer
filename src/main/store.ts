@@ -1,4 +1,3 @@
-import { safeStorage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -10,38 +9,25 @@ export interface StoredSite {
   baseUrl: string
   kind: SiteKind
   account: string
-  loginMode: 'password' | 'jwt'
-  username: string
-  /** base64(safeStorage 加密后的密码)；系统不支持加密时不保存 */
-  passwordCipher: string | null
-  jwt: string | null
+  /** 内置浏览器登录后截获的面板令牌 */
+  token: string | null
   lastUsedAt: number | null
 }
 
-/** Electron 45 起同步探测被弃用，优先走异步版本。 */
-export async function encryptionAvailable(): Promise<boolean> {
-  try {
-    const asyncProbe = (
-      safeStorage as { isAsyncEncryptionAvailable?: () => Promise<boolean> }
-    ).isAsyncEncryptionAvailable
-    if (typeof asyncProbe === 'function') return await asyncProbe.call(safeStorage)
-    return safeStorage.isEncryptionAvailable()
-  } catch {
-    return false
-  }
-}
-
-export async function encryptSecret(plain: string): Promise<string | null> {
-  if (!plain || !(await encryptionAvailable())) return null
-  return Buffer.from(safeStorage.encryptString(plain)).toString('base64')
-}
-
-export async function decryptSecret(cipher: string | null): Promise<string> {
-  if (!cipher || !(await encryptionAvailable())) return ''
-  try {
-    return safeStorage.decryptString(Buffer.from(cipher, 'base64'))
-  } catch {
-    return ''
+/**
+ * 旧版本按 loginMode + 密文密码 + jwt 三个字段存，读到时收敛成单一令牌。
+ * 不做这层转换，升级后每个站点都会掉成「没有令牌」，得重新登录一遍。
+ */
+function toStoredSite(raw: Record<string, unknown>): StoredSite {
+  const token = raw.token ?? raw.jwt
+  return {
+    id: String(raw.id ?? randomUUID()),
+    label: String(raw.label ?? ''),
+    baseUrl: String(raw.baseUrl ?? ''),
+    kind: raw.kind === 'newapi' ? 'newapi' : 'sub2api',
+    account: String(raw.account ?? ''),
+    token: typeof token === 'string' && token ? token : null,
+    lastUsedAt: typeof raw.lastUsedAt === 'number' ? raw.lastUsedAt : null
   }
 }
 
@@ -63,7 +49,7 @@ export class SiteStore {
   load(): StoredSite[] {
     try {
       const raw = JSON.parse(readFileSync(this.file, 'utf-8')) as unknown
-      return Array.isArray(raw) ? (raw as StoredSite[]) : []
+      return Array.isArray(raw) ? raw.map((s) => toStoredSite(s as Record<string, unknown>)) : []
     } catch {
       return []
     }
@@ -78,8 +64,8 @@ export class SiteStore {
     return this.load().find((s) => s.id === id)
   }
 
-  /** 新增或更新。password / jwt 未下发时保留原值，空串表示清除。 */
-  async upsert(draft: SiteDraft): Promise<StoredSite> {
+  /** 新增或更新。token 未下发时保留原值，空串表示清除。 */
+  upsert(draft: SiteDraft): StoredSite {
     const list = this.load()
     const existing = draft.id ? list.find((s) => s.id === draft.id) : undefined
 
@@ -88,14 +74,8 @@ export class SiteStore {
       label: draft.label.trim() || hostOf(draft.baseUrl),
       baseUrl: draft.baseUrl,
       kind: draft.kind,
-      account: draft.account.trim() || draft.username.trim() || hostOf(draft.baseUrl),
-      loginMode: draft.loginMode,
-      username: draft.username,
-      passwordCipher:
-        draft.password === undefined
-          ? (existing?.passwordCipher ?? null)
-          : ((await encryptSecret(draft.password)) ?? null),
-      jwt: draft.jwt === undefined ? (existing?.jwt ?? null) : draft.jwt || null,
+      account: draft.account.trim() || hostOf(draft.baseUrl),
+      token: draft.token === undefined ? (existing?.token ?? null) : draft.token || null,
       lastUsedAt: existing?.lastUsedAt ?? null
     }
 
@@ -112,13 +92,11 @@ export class SiteStore {
     this.saveAll(list.map((s) => (s.id === id ? { ...s, lastUsedAt: Date.now() } : s)))
   }
 
-  /** 更新登录方式（内置浏览器截获令牌后走 jwt）。 */
-  applyCred(id: string, jwt: string, account: string): void {
+  /** 建立会话后回填面板账号名，并记一次使用时间。 */
+  applyLogin(id: string, account: string): void {
     const list = this.load()
     this.saveAll(
-      list.map((s) =>
-        s.id === id ? { ...s, jwt, loginMode: 'jwt' as const, account, lastUsedAt: Date.now() } : s
-      )
+      list.map((s) => (s.id === id ? { ...s, account, lastUsedAt: Date.now() } : s))
     )
   }
 }
@@ -130,10 +108,7 @@ export function toProfile(site: StoredSite): SiteProfile {
     baseUrl: site.baseUrl,
     kind: site.kind,
     account: site.account,
-    loginMode: site.loginMode,
-    username: site.username,
-    hasPassword: Boolean(site.passwordCipher),
-    hasJwt: Boolean(site.jwt),
+    hasToken: Boolean(site.token),
     lastUsedAt: site.lastUsedAt
   }
 }

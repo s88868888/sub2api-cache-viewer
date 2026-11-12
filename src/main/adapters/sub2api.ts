@@ -14,23 +14,18 @@ import {
 
 const API = '/api/v1'
 
+/**
+ * 用量接口是按条数变慢的：实测有站点一页 100 条要 24s，
+ * 用默认的 20s 超时会有数据的站点被误报成请求失败。
+ */
+const USAGE_TIMEOUT_MS = 90_000
+
 interface Envelope<T> {
   /** 成功时是数字 0；部分中间件把 reason 写在这里，所以可能是字符串 */
   code?: number | string
   message?: string
   reason?: string
   data?: T
-}
-
-interface LoginData {
-  access_token?: string
-  refresh_token?: string
-  expires_in?: number
-  token_type?: string
-  requires_2fa?: boolean
-  temp_token?: string
-  user_email_masked?: string
-  user?: { email?: string; username?: string }
 }
 
 interface RawUsageLog {
@@ -120,87 +115,46 @@ function toDate(ms: number | null): string | undefined {
   return new Date(ms).toISOString().slice(0, 10)
 }
 
-export async function sub2apiLogin(
-  baseUrl: string,
-  email: string,
-  password: string,
-  totp?: string
-): Promise<SiteSession> {
-  const body: Record<string, string> = { email, password }
-
-  let res: Response_<Envelope<LoginData>>
+/**
+ * 令牌能不能用，只有真的打一次用量接口才算数。
+ * 内置浏览器截获时每个候选都要过这里，接口明确拒绝才判它不可用；
+ * 拦截页那种 403（响应体不是 JSON）要照抛 —— 把「请求被挡」报成「令牌已过期」，
+ * 用户就会对着一枚好令牌反复重登。
+ */
+export async function sub2apiProbeToken(baseUrl: string, token: string): Promise<boolean> {
   try {
-    res = await requestJson<Envelope<LoginData>>(baseUrl, `${API}/auth/login`, {
-      method: 'POST',
-      body
+    await requestJson<Envelope<Paginated<RawUsageLog>>>(baseUrl, `${API}/usage`, {
+      headers: { Authorization: `Bearer ${token}` },
+      query: { page: 1, page_size: 1 }
     })
+    return true
   } catch (err) {
-    if (err instanceof SiteError) {
-      if (/turnstile|captcha|人机|验证码/i.test(err.message)) {
-        throw new SiteError(
-          '该站点的登录接口开启了人机验证，直连接口无法自动通过。请改用「内置浏览器登录」，' +
-            '在弹出的窗口里照常登录即可；也可以手动从浏览器 F12 复制 Authorization 头的 JWT。',
-          'auth',
-          err.status
-        )
-      }
-      if (err.status === 401) throw new SiteError('邮箱或密码不正确', 'auth', err.status)
-    }
+    if (err instanceof SiteError && err.kind === 'auth' && !err.nonJson) return false
     throw err
   }
-
-  let data = unwrap(res, '登录')
-
-  if (data?.requires_2fa) {
-    if (!data.temp_token) throw new SiteError('站点要求两步验证但缺少临时令牌', 'auth')
-    if (!totp) throw new SiteError('NEED_TOTP', 'auth')
-    const second = await requestJson<Envelope<LoginData>>(baseUrl, `${API}/auth/login/2fa`, {
-      method: 'POST',
-      body: { temp_token: data.temp_token, totp_code: totp }
-    })
-    data = unwrap(second, '两步验证')
-    if (!data?.access_token) throw new SiteError('两步验证未返回访问令牌', 'auth')
-  }
-
-  if (!data?.access_token) {
-    const hint = data ? JSON.stringify(data).slice(0, 120) : '响应为空'
-    throw new SiteError(`登录响应中没有 access_token：${hint}`, 'shape')
-  }
-
-  const session: SiteSession = {
-    kind: 'sub2api',
-    baseUrl,
-    account: data.user?.email ?? data.user?.username ?? email,
-    groups: [],
-    cred: {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? null
-    }
-  }
-
-  session.groups = await sub2apiGroups(baseUrl, data.access_token)
-  return session
 }
 
-/** 允许用户直接粘贴 JWT 建立会话，用于站点开启人机验证导致自动登录被挡的情况。 */
-export async function sub2apiLoginWithJwt(baseUrl: string, jwt: string): Promise<SiteSession> {
-  await requestJson<Envelope<Paginated<RawUsageLog>>>(baseUrl, `${API}/usage`, {
-    headers: { Authorization: `Bearer ${jwt}` },
-    query: { page: 1, page_size: 1 }
-  }).catch((err: unknown) => {
-    if (err instanceof SiteError && err.kind === 'auth') {
-      throw new SiteError('这个 JWT 无法访问用量接口，可能已过期', 'auth')
-    }
-    throw err
-  })
-  const groups = await sub2apiGroups(baseUrl, jwt)
-  return {
-    kind: 'sub2api',
-    baseUrl,
-    account: 'JWT 直连',
-    groups,
-    cred: { accessToken: jwt, refreshToken: null }
+/** 用内置浏览器截获的面板令牌建立会话。 */
+export async function sub2apiLoginWithToken(baseUrl: string, token: string): Promise<SiteSession> {
+  if (!(await sub2apiProbeToken(baseUrl, token))) {
+    throw new SiteError('面板令牌已失效，请在这一站的编辑弹窗里重新用浏览器登录', 'auth')
   }
+  const [groups, account] = await Promise.all([
+    sub2apiGroups(baseUrl, token),
+    sub2apiAccount(baseUrl, token)
+  ])
+  return { kind: 'sub2api', baseUrl, account, groups, cred: { accessToken: token } }
+}
+
+/** 顶栏要显示这是哪个账号的面板。 */
+async function sub2apiAccount(baseUrl: string, token: string): Promise<string> {
+  const res = await requestJson<Envelope<{ email?: string; username?: string }>>(
+    baseUrl,
+    `${API}/user/profile`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  ).catch(() => null)
+  const user = res?.data?.data
+  return user?.email || user?.username || '面板令牌'
 }
 
 async function sub2apiGroups(baseUrl: string, token: string): Promise<GroupOption[]> {
@@ -220,6 +174,7 @@ export async function sub2apiQuery(
   const token = String(session.cred.accessToken ?? '')
   const res = await requestJson<Envelope<Paginated<RawUsageLog>>>(session.baseUrl, `${API}/usage`, {
     headers: { Authorization: `Bearer ${token}` },
+    timeoutMs: USAGE_TIMEOUT_MS,
     query: {
       page: filters.page,
       page_size: filters.pageSize,
@@ -281,7 +236,6 @@ function jwtExpiresAtMs(token: string): number | null {
 
 export interface PanelSeed {
   token: string
-  refreshToken: string | null
   expiresAtMs: number | null
   /** 前端 isAuthenticated 同时要求 auth_token 和 auth_user，缺一个仍算未登录 */
   userJson: string
@@ -289,8 +243,7 @@ export interface PanelSeed {
 
 /**
  * 免登录直达面板所需的种子。
- * user 一律重新拉 /user/profile 而不是复用登录快照 —— JWT 直连模式下没有登录响应，
- * 且昵称/权限可能已经变过。
+ * user 一律重新拉 /user/profile —— 昵称/权限可能在令牌签发之后变过。
  */
 export async function sub2apiPanelSeed(session: SiteSession): Promise<PanelSeed | null> {
   const token = String(session.cred.accessToken ?? '')
@@ -305,10 +258,5 @@ export async function sub2apiPanelSeed(session: SiteSession): Promise<PanelSeed 
   const user = res?.data?.data
   if (!user || typeof user !== 'object') return null
 
-  return {
-    token,
-    refreshToken: (session.cred.refreshToken as string | null) ?? null,
-    expiresAtMs: jwtExpiresAtMs(token),
-    userJson: JSON.stringify(user)
-  }
+  return { token, expiresAtMs: jwtExpiresAtMs(token), userJson: JSON.stringify(user) }
 }

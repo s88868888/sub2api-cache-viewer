@@ -6,7 +6,6 @@ export interface RequestOptions {
   /** 会被 JSON 序列化 */
   body?: unknown
   query?: Record<string, string | number | boolean | null | undefined>
-  cookieJar?: CookieJar
   timeoutMs?: number
 }
 
@@ -15,44 +14,6 @@ export interface Response_<T> {
   ok: boolean
   data: T
   headers: Headers
-}
-
-/**
- * 最小 Cookie 存储。new-api 的会话登录依赖 Set-Cookie，
- * 而 Node fetch 不自动维持 cookie，必须自己接住再回传。
- */
-export class CookieJar {
-  private readonly store = new Map<string, string>()
-
-  ingest(setCookieHeaders: string[]): void {
-    for (const line of setCookieHeaders) {
-      const [pair] = line.split(';')
-      if (!pair) continue
-      const eq = pair.indexOf('=')
-      if (eq <= 0) continue
-      const name = pair.slice(0, eq).trim()
-      const value = pair.slice(eq + 1).trim()
-      if (value === '' || value === 'null') this.store.delete(name)
-      else this.store.set(name, value)
-    }
-  }
-
-  header(): string {
-    return [...this.store].map(([k, v]) => `${k}=${v}`).join('; ')
-  }
-
-  /** 免登录打开面板时需要把会话 cookie 原样搬进那个窗口的 session */
-  entries(): Array<{ name: string; value: string }> {
-    return [...this.store].map(([name, value]) => ({ name, value }))
-  }
-
-  get size(): number {
-    return this.store.size
-  }
-
-  clear(): void {
-    this.store.clear()
-  }
 }
 
 export function normalizeBaseUrl(raw: string): string {
@@ -97,9 +58,6 @@ export async function requestJson<T = unknown>(
     ...options.headers
   }
 
-  const cookie = options.cookieJar?.header()
-  if (cookie) headers.Cookie = cookie
-
   let body: string | undefined
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json'
@@ -120,10 +78,6 @@ export async function requestJson<T = unknown>(
     throw new SiteError(`请求失败 ${path}：${msg}`, 'network')
   }
 
-  const setCookie =
-    typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : []
-  if (options.cookieJar && setCookie.length) options.cookieJar.ingest(setCookie)
-
   const text = await res.text()
   const contentType = res.headers.get('content-type') ?? ''
 
@@ -139,7 +93,8 @@ export async function requestJson<T = unknown>(
     throw new SiteError(
       `HTTP ${res.status} ${path}：${text.slice(0, 160).replace(/\s+/g, ' ')}`,
       res.status === 401 || res.status === 403 ? 'auth' : 'network',
-      res.status
+      res.status,
+      true
     )
   }
 

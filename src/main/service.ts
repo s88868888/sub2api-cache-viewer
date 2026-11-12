@@ -1,4 +1,3 @@
-import { CookieJar } from './http'
 import {
   buildColumn,
   collectSample,
@@ -28,11 +27,8 @@ import {
   cacheRateOf,
   detectSite,
   emptySummary,
-  newapiLogin,
-  newapiQuery,
   summarize,
-  sub2apiLogin,
-  sub2apiLoginWithJwt,
+  sub2apiLoginWithToken,
   sub2apiPanelSeed,
   sub2apiQuery,
   type PanelSeed
@@ -40,10 +36,8 @@ import {
 import { buildSeries, dayAxis } from './trend'
 
 export interface PanelCredential {
-  kind: SiteKind
   baseUrl: string
   seed: PanelSeed | null
-  cookies: Array<{ name: string; value: string }>
 }
 
 export interface Target {
@@ -85,7 +79,6 @@ const SAMPLE_TTL_MS = 60_000
 
 interface Active {
   session: SiteSession
-  jar: CookieJar | null
   params: LoginParams
 }
 
@@ -117,10 +110,11 @@ export class GatewayService {
     this.actives.clear()
   }
 
-  /** 建立（或复用）某个站点的会话。已连接时直接返回缓存信息。 */
+  /** 建立（或复用）某个站点的会话。凭据没变时直接返回缓存信息。 */
   async connect(siteId: string, params: LoginParams): Promise<ConnectionInfo> {
     const existing = this.actives.get(siteId)
-    if (existing) return this.infoOf(existing.session)
+    // 令牌换过就必须重开，否则新令牌只是落进了磁盘，内存里还在拿上一枚查询
+    if (existing && existing.params.token === params.token) return this.infoOf(existing.session)
 
     const active = await this.open(params)
     this.actives.set(siteId, active)
@@ -128,28 +122,20 @@ export class GatewayService {
   }
 
   private async open(params: LoginParams): Promise<Active> {
-    if (params.mode === 'browser') {
-      throw new SiteError('内置浏览器登录请走 capture 通道，由主进程截获令牌', 'shape')
+    const token = params.token.trim()
+    if (!token) {
+      throw new SiteError('该站点还没有可用令牌，请用内置浏览器登录一次', 'auth')
     }
 
     const kind = params.kind ?? (await detectSite(params.baseUrl))
-    if (!kind) {
-      throw new SiteError(
-        '无法识别站点类型：既不是 sub2api 也不是 new-api/one-api，请检查地址是否正确',
-        'shape'
-      )
+    if (kind === 'newapi') {
+      throw new SiteError('new-api 站点已不再支持，请添加 sub2api 站点', 'shape')
+    }
+    if (kind !== 'sub2api') {
+      throw new SiteError('无法识别站点类型，请检查地址是否为 sub2api 站点', 'shape')
     }
 
-    if (params.mode === 'jwt' || kind === 'sub2api') {
-      const session =
-        params.mode === 'jwt'
-          ? await sub2apiLoginWithJwt(params.baseUrl, (params.jwt ?? '').trim())
-          : await sub2apiLogin(params.baseUrl, params.username.trim(), params.password, params.totp)
-      return { session, jar: null, params }
-    }
-
-    const { session, jar } = await newapiLogin(params.baseUrl, params.username.trim(), params.password)
-    return { session, jar, params }
+    return { session: await sub2apiLoginWithToken(params.baseUrl, token), params }
   }
 
   private infoOf(session: SiteSession): ConnectionInfo {
@@ -178,10 +164,7 @@ export class GatewayService {
   }
 
   private async runQuery(active: Active, filters: QueryFilters): Promise<QueryResult> {
-    const { session, jar } = active
-    return session.kind === 'sub2api'
-      ? sub2apiQuery(session, filters)
-      : newapiQuery(session, jar!, filters)
+    return sub2apiQuery(active.session, filters)
   }
 
   /**
@@ -400,30 +383,13 @@ export class GatewayService {
     }
   }
 
-  /**
-   * 免登录打开官网面板所需的凭据。
-   * sub2api 走 localStorage 注入，new-api 走会话 cookie 注入 —— 两套前端机制不同。
-   */
+  /** 免登录打开官网面板所需的凭据（往面板的 localStorage 里种令牌）。 */
   async panelCredential(siteId: string, params: LoginParams): Promise<PanelCredential> {
     await this.connect(siteId, params)
     const active = this.actives.get(siteId)
     if (!active) throw new SiteError('该站点未能建立会话', 'auth')
 
-    if (active.session.kind === 'sub2api') {
-      return {
-        kind: 'sub2api',
-        baseUrl: active.session.baseUrl,
-        seed: await sub2apiPanelSeed(active.session),
-        cookies: []
-      }
-    }
-
-    return {
-      kind: 'newapi',
-      baseUrl: active.session.baseUrl,
-      seed: null,
-      cookies: active.jar?.entries() ?? []
-    }
+    return { baseUrl: active.session.baseUrl, seed: await sub2apiPanelSeed(active.session) }
   }
 }
 

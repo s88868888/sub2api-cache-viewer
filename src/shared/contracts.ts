@@ -27,8 +27,8 @@ export interface UsageRecord {
   actualCost: number
   /**
    * 折算成美元的成本，跨站对比只能用它。
-   * new-api 拿不到 quota_per_unit 时为 null —— 此时该站的成本列不参与对比，
-   * 而不是拿 quota 当美元混算。
+   * 拿不到换算系数时为 null —— 此时该站的成本列不参与对比，
+   * 而不是拿别的计价单位当美元混算。
    */
   costUsd: number | null
   durationMs: number | null
@@ -78,8 +78,8 @@ export interface QueryFilters {
 }
 
 /**
- * 账户余额。sub2api 直接给美元，new-api 给 quota 整数，
- * 需要站点的 quota_per_unit 才能换算成美元，换不出来时只展示原生值。
+ * 账户余额。sub2api 直接给美元；
+ * 以 quota 记账的站点换算不出来时只展示原生值。
  */
 export interface SiteBalance {
   raw: number
@@ -98,18 +98,13 @@ export interface QueryResult {
   balance: SiteBalance | null
 }
 
+/**
+ * 建立会话用的凭据。token 是内置浏览器登录时截获并校验过的面板令牌，
+ * 面板接口只认它，`sk-` 开头的 API key 读不到用量记录。
+ */
 export interface LoginParams {
   baseUrl: string
-  username: string
-  password: string
-  totp?: string
-  /**
-   * password = 直接调登录接口
-   * browser  = 打开内置浏览器让人机验证通过后截获令牌
-   * jwt      = 使用用户粘贴的面板 JWT
-   */
-  mode: 'password' | 'browser' | 'jwt'
-  jwt?: string
+  token: string
   kind?: SiteKind
 }
 
@@ -121,8 +116,8 @@ export interface ConnectionInfo {
 }
 
 /**
- * 已保存的站点。密文与 JWT 只留在主进程，
- * 渲染层只看 hasPassword / hasJwt，避免凭据跨 IPC 回流。
+ * 已保存的站点。令牌只留在主进程，
+ * 渲染层只看 hasToken，避免凭据跨 IPC 回流。
  */
 export interface SiteProfile {
   id: string
@@ -131,10 +126,7 @@ export interface SiteProfile {
   baseUrl: string
   kind: SiteKind
   account: string
-  loginMode: 'password' | 'jwt'
-  username: string
-  hasPassword: boolean
-  hasJwt: boolean
+  hasToken: boolean
   lastUsedAt: number | null
 }
 
@@ -144,11 +136,8 @@ export interface SiteDraft {
   baseUrl: string
   kind: SiteKind
   account: string
-  loginMode: 'password' | 'jwt'
-  username: string
-  /** 仅在用户改动时下发；空字符串表示清除 */
-  password?: string
-  jwt?: string
+  /** 仅在内置浏览器拿到令牌后下发；未下发时保留原值，空字符串表示清除 */
+  token?: string
 }
 
 export interface SiteState {

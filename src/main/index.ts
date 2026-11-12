@@ -14,15 +14,9 @@ import {
   SiteState
 } from '../shared/contracts'
 import { normalizeBaseUrl } from './http'
-import { captureJwtWithBrowser } from './capture'
-import {
-  PrefsStore,
-  StoredSite,
-  SiteStore,
-  decryptSecret,
-  encryptionAvailable,
-  toProfile
-} from './store'
+import { captureTokenWithBrowser } from './capture'
+import { sub2apiProbeToken } from './adapters'
+import { PrefsStore, StoredSite, SiteStore, toProfile } from './store'
 
 let win: BrowserWindow | null = null
 const service = new GatewayService()
@@ -43,8 +37,7 @@ const IPC = {
   prefsSave: 'prefs:save',
   compare: 'site:compare',
   scan: 'site:scan',
-  openPanel: 'site:open-panel',
-  appMeta: 'app:meta'
+  openPanel: 'site:open-panel'
 } as const
 
 /**
@@ -110,29 +103,11 @@ function mustGet(id: string): StoredSite {
   return site
 }
 
-async function paramsFor(site: StoredSite): Promise<LoginParams> {
-  if (site.loginMode === 'jwt') {
-    if (!site.jwt) throw new SiteError('该站点没有可用令牌，请重新登录', 'auth')
-    return {
-      baseUrl: site.baseUrl,
-      username: '',
-      password: '',
-      mode: 'jwt',
-      jwt: site.jwt,
-      kind: site.kind
-    }
+function paramsFor(site: StoredSite): LoginParams {
+  if (!site.token) {
+    throw new SiteError('该站点还没有可用令牌，请用内置浏览器登录一次', 'auth')
   }
-  const password = await decryptSecret(site.passwordCipher)
-  if (!password) {
-    throw new SiteError('本机没有该站点的可用密码，请重新填写', 'auth')
-  }
-  return {
-    baseUrl: site.baseUrl,
-    username: site.username,
-    password,
-    mode: 'password',
-    kind: site.kind
-  }
+  return { baseUrl: site.baseUrl, token: site.token, kind: site.kind }
 }
 
 /**
@@ -143,12 +118,12 @@ async function siteInputs(ids: string[]): Promise<CompareSiteInput[]> {
   const out: CompareSiteInput[] = []
   for (const site of ids.map(mustGet)) {
     try {
-      out.push({ siteId: site.id, label: site.label, params: await paramsFor(site) })
+      out.push({ siteId: site.id, label: site.label, params: paramsFor(site) })
     } catch (err) {
       out.push({
         siteId: site.id,
         label: site.label,
-        params: { baseUrl: site.baseUrl, username: '', password: '', mode: 'password' },
+        params: { baseUrl: site.baseUrl, token: '', kind: site.kind },
         paramsError: err instanceof SiteError ? err.message : String(err)
       })
     }
@@ -157,17 +132,15 @@ async function siteInputs(ids: string[]): Promise<CompareSiteInput[]> {
 }
 
 function registerIpc(): void {
-  handle(IPC.appMeta, async () => ({ canEncrypt: await encryptionAvailable() }))
-
   handle(IPC.detect, (baseUrl: string) => detectSite(normalizeBaseUrl(baseUrl)))
 
   handle(IPC.sitesList, (): SiteState[] =>
     store.load().map((site) => ({ profile: toProfile(site), connected: service.isConnected(site.id) }))
   )
 
-  handle(IPC.sitesSave, async (draft: SiteDraft): Promise<SiteProfile> => {
-    const next: SiteDraft = { ...draft, baseUrl: normalizeBaseUrl(draft.baseUrl) }
-    const saved = await store.upsert(next)
+  /** 只改名称与地址；令牌没重新截获就沿用原来的，所以不下发 token 字段。 */
+  handle(IPC.sitesSave, (draft: SiteDraft): SiteProfile => {
+    const saved = store.upsert({ ...draft, baseUrl: normalizeBaseUrl(draft.baseUrl) })
     service.disconnect(saved.id)
     return toProfile(saved)
   })
@@ -183,7 +156,7 @@ function registerIpc(): void {
 
   handle(IPC.connect, async (id: string) => {
     const site = mustGet(id)
-    const info = await service.connect(site.id, await paramsFor(site))
+    const info = await service.connect(site.id, paramsFor(site))
     store.markUsed(site.id)
     return info
   })
@@ -193,31 +166,26 @@ function registerIpc(): void {
     async (arg: { id?: string; baseUrl: string; label?: string }): Promise<SiteProfile> => {
       const baseUrl = normalizeBaseUrl(arg.baseUrl)
       const kind = (await detectSite(baseUrl)) ?? null
+      if (kind === 'newapi') {
+        throw new SiteError('new-api 站点已不再支持，请添加 sub2api 站点', 'shape')
+      }
       if (kind !== 'sub2api') {
-        throw new SiteError('内置浏览器登录目前只支持 sub2api 站点', 'shape')
+        throw new SiteError('无法识别站点类型，请检查地址是否为 sub2api 站点', 'shape')
       }
 
-      const jwt = await captureJwtWithBrowser(baseUrl)
-      const saved = await store.upsert({
+      // 令牌先验后存：落进站点的必须是真能查通用量数据的那一枚
+      const token = await captureTokenWithBrowser(baseUrl, (t) => sub2apiProbeToken(baseUrl, t))
+      const saved = store.upsert({
         id: arg.id,
         label: arg.label ?? '',
         baseUrl,
         kind,
         account: '',
-        username: '',
-        loginMode: 'jwt',
-        jwt
+        token
       })
 
-      const info = await service.connect(saved.id, {
-        baseUrl,
-        username: '',
-        password: '',
-        mode: 'jwt',
-        jwt,
-        kind
-      })
-      store.applyCred(saved.id, jwt, info.account)
+      const info = await service.connect(saved.id, { baseUrl, token, kind })
+      store.applyLogin(saved.id, info.account)
       return toProfile({ ...saved, account: info.account })
     }
   )
@@ -232,17 +200,17 @@ function registerIpc(): void {
     const site = mustGet(siteId)
     let cred: PanelCredential
     try {
-      cred = await service.panelCredential(site.id, await paramsFor(site))
+      cred = await service.panelCredential(site.id, paramsFor(site))
     } catch {
-      cred = { kind: site.kind, baseUrl: site.baseUrl, seed: null, cookies: [] }
+      cred = { baseUrl: site.baseUrl, seed: null }
     }
     await openSitePanel(cred)
-    return { kind: cred.kind, seeded: Boolean(cred.seed || cred.cookies.length) }
+    return { seeded: Boolean(cred.seed) }
   })
 
   handle(IPC.query, async (arg: { siteId: string; filters: QueryFilters }) => {
     const site = mustGet(arg.siteId)
-    await service.connect(site.id, await paramsFor(site))
+    await service.connect(site.id, paramsFor(site))
     store.markUsed(site.id)
     return service.query(site.id, arg.filters)
   })
@@ -254,7 +222,7 @@ function registerIpc(): void {
       targets.push({
         siteId: site.id,
         label: site.label,
-        params: await paramsFor(site)
+        params: paramsFor(site)
       })
     }
     return service.aggregate(targets, arg.filters)

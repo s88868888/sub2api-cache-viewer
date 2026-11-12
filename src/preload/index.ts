@@ -22,8 +22,6 @@ const initialTheme = initialThemeArg ? initialThemeArg.slice('--initial-theme='.
 const api = {
   initialTheme: (): string | null => initialTheme,
 
-  meta: (): Promise<IpcResult<{ canEncrypt: boolean }>> => ipcRenderer.invoke('app:meta'),
-
   detect: (baseUrl: string): Promise<IpcResult<SiteKind | null>> =>
     ipcRenderer.invoke('site:detect', baseUrl),
 
@@ -70,9 +68,7 @@ const api = {
     endMs: number | null
   }): Promise<IpcResult<ScanResult>> => ipcRenderer.invoke('site:scan', arg),
 
-  openPanel: (
-    siteId: string
-  ): Promise<IpcResult<{ kind: SiteKind; seeded: boolean }>> =>
+  openPanel: (siteId: string): Promise<IpcResult<{ seeded: boolean }>> =>
     ipcRenderer.invoke('site:open-panel', siteId),
 
   prefsGet: (): Promise<IpcResult<Prefs>> => ipcRenderer.invoke('prefs:get'),

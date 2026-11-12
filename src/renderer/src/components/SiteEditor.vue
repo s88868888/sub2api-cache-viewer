@@ -7,19 +7,24 @@ const emit = defineEmits<{ close: []; saved: [SiteProfile] }>()
 
 const label = ref(props.initial?.label ?? '')
 const baseUrl = ref(props.initial?.baseUrl ?? '')
-const username = ref(props.initial?.username ?? '')
-const password = ref('')
-const jwt = ref('')
-const mode = ref<'password' | 'browser' | 'jwt'>(
-  props.initial ? (props.initial.loginMode === 'jwt' ? 'jwt' : 'password') : 'browser'
-)
 
 const detected = ref<SiteKind | null>(props.initial?.kind ?? null)
 const busy = ref(false)
 const error = ref('')
 
 const isEdit = computed(() => Boolean(props.initial))
-const canSubmit = computed(() => baseUrl.value.trim().length > 0 && !busy.value)
+/** 地址一改，手上的令牌就不再属于这个站，只能重新登录一次 */
+const urlChanged = computed(() => baseUrl.value.trim() !== (props.initial?.baseUrl ?? ''))
+const canSave = computed(() => isEdit.value && !urlChanged.value && !busy.value)
+const canLogin = computed(() => baseUrl.value.trim().length > 0 && !busy.value)
+
+const tokenHint = computed(() => {
+  if (urlChanged.value) return '地址已改动，原令牌不再适用，需要重新登录'
+  if (!props.initial) return ''
+  return props.initial.hasToken
+    ? `已保存令牌（${props.initial.account}），重新登录会替换它`
+    : '还没有可用令牌'
+})
 
 async function detect(): Promise<void> {
   const target = baseUrl.value.trim()
@@ -29,37 +34,34 @@ async function detect(): Promise<void> {
   if (!res.ok) error.value = res.error.message
 }
 
-async function submit(): Promise<void> {
+async function save(): Promise<void> {
   busy.value = true
   error.value = ''
-  const target = baseUrl.value.trim()
-
-  if (mode.value === 'browser') {
-    const res = await window.apiShow.capture({
-      id: props.initial?.id,
-      baseUrl: target,
-      label: label.value
-    })
-    busy.value = false
-    if (!res.ok) {
-      error.value = res.error.message
-      return
-    }
-    emit('saved', res.data)
-    return
-  }
 
   const res = await window.apiShow.sitesSave({
     id: props.initial?.id,
     label: label.value,
-    baseUrl: target,
+    baseUrl: baseUrl.value.trim(),
     kind: detected.value ?? 'sub2api',
-    account: mode.value === 'jwt' ? '' : username.value,
-    username: username.value,
-    loginMode: mode.value,
-    // 编辑时留空表示沿用已保存的凭据，不要覆盖成空
-    password: mode.value === 'password' && password.value ? password.value : undefined,
-    jwt: mode.value === 'jwt' && jwt.value ? jwt.value : undefined
+    account: props.initial?.account ?? ''
+  })
+
+  busy.value = false
+  if (!res.ok) {
+    error.value = res.error.message
+    return
+  }
+  emit('saved', res.data)
+}
+
+async function login(): Promise<void> {
+  busy.value = true
+  error.value = ''
+
+  const res = await window.apiShow.capture({
+    id: props.initial?.id,
+    baseUrl: baseUrl.value.trim(),
+    label: label.value
   })
 
   busy.value = false
@@ -88,7 +90,7 @@ async function submit(): Promise<void> {
               placeholder="https://your-relay-site.com"
               spellcheck="false"
               @blur="detect"
-              @keyup.enter="submit"
+              @keyup.enter="login"
             />
             <span v-if="detected" class="tag" :class="detected">
               {{ detected === 'sub2api' ? 'sub2api' : 'new-api' }}
@@ -102,59 +104,25 @@ async function submit(): Promise<void> {
           <input v-model="label" placeholder="噜噜 AI" />
         </div>
 
-        <div class="field">
-          <label>登录方式</label>
-          <div class="modes">
-            <button class="seg" :class="{ on: mode === 'browser' }" @click="mode = 'browser'">
-              内置浏览器（推荐）
-            </button>
-            <button class="seg" :class="{ on: mode === 'password' }" @click="mode = 'password'">
-              邮箱 + 密码
-            </button>
-            <button class="seg" :class="{ on: mode === 'jwt' }" @click="mode = 'jwt'">粘贴 JWT</button>
-          </div>
-        </div>
-
-        <p v-if="mode === 'browser'" class="note">
-          保存时会打开一个真实浏览器窗口，你在里面照常登录并通过人机验证，
-          工具自动截获面板令牌。之后每次查询都用这个令牌，无需再存密码。
+        <p v-if="detected === 'newapi'" class="err">
+          new-api 站点已不再支持，只能添加 sub2api 站点。
+        </p>
+        <p v-else class="note">
+          「打开浏览器登录」会开一个真实浏览器窗口，你在里面照常登录并通过人机验证。
+          工具要等到拿到能用通用量接口的那枚令牌才关窗口，之后每次查询都沿用；
+          面板令牌通常一天过期，取不到数据时再来登一次即可。
         </p>
 
-        <template v-if="mode === 'password'">
-          <div class="two">
-            <div class="field">
-              <label>邮箱 / 用户名</label>
-              <input v-model="username" spellcheck="false" />
-            </div>
-            <div class="field">
-              <label>密码</label>
-              <input
-                v-model="password"
-                type="password"
-                :placeholder="initial?.hasPassword ? '已保存，留空则不修改' : '输入密码'"
-              />
-            </div>
-          </div>
-          <p class="hint">密码用 Windows 凭据加密后存在本机，不会上传，也不会回传到界面。</p>
-        </template>
-
-        <div v-else-if="mode === 'jwt'" class="field">
-          <label>面板 JWT（浏览器 F12 → 网络 → 任意请求的 Authorization 头）</label>
-          <input
-            v-model="jwt"
-            placeholder="eyJhbGciOi..."
-            spellcheck="false"
-            :title="initial?.hasJwt ? '已保存一个令牌，粘贴新的会覆盖' : ''"
-          />
-        </div>
+        <p v-if="isEdit" class="hint">{{ tokenHint }}</p>
 
         <p v-if="error" class="err">{{ error }}</p>
       </div>
 
       <footer>
         <button class="btn ghost" :disabled="busy" @click="emit('close')">取消</button>
-        <button class="btn" :disabled="!canSubmit" @click="submit">
-          {{ busy ? '处理中…' : mode === 'browser' ? '打开浏览器登录' : '保存' }}
+        <button v-if="canSave" class="btn ghost" @click="save">保存</button>
+        <button class="btn" :disabled="!canLogin" @click="login">
+          {{ busy ? '等待登录…' : '打开浏览器登录' }}
         </button>
       </footer>
     </div>
@@ -216,34 +184,6 @@ h3 {
 .line input {
   flex: 1;
   min-width: 0;
-}
-
-.two {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
-.modes {
-  display: inline-flex;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  overflow: hidden;
-  width: max-content;
-}
-
-.seg {
-  padding: 4px 10px;
-  border: 0;
-  background: var(--panel);
-  color: var(--text-dim);
-  font-size: 12px;
-}
-
-.seg.on {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
 }
 
 .note {

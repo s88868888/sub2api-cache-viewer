@@ -548,7 +548,7 @@ async function remove(id: string): Promise<void> {
 
       <div v-if="!states.length" class="welcome">
         <h2>还没有站点</h2>
-        <p>添加一个 sub2api 或 new-api 中转站点，工具会读取它的用量记录并算出每条与总体的缓存命中率。</p>
+        <p>添加一个 sub2api 中转站点，工具会读取它的用量记录并算出每条与总体的缓存命中率。</p>
         <button class="btn" @click="openAdd">添加第一个站点</button>
       </div>
 

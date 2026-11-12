@@ -26,16 +26,23 @@ export type {
 export class SiteError extends Error {
   readonly kind: 'auth' | 'network' | 'shape' | 'unknown'
   readonly status?: number
+  /**
+   * 响应体不是 JSON（Cloudflare 拦截页、HTML 兜底路由）。
+   * 这类 403 只代表「请求被挡」，不代表令牌无效，不能报成令牌过期。
+   */
+  readonly nonJson?: boolean
 
   constructor(
     message: string,
     kind: 'auth' | 'network' | 'shape' | 'unknown' = 'unknown',
-    status?: number
+    status?: number,
+    nonJson?: boolean
   ) {
     super(message)
     this.name = 'SiteError'
     this.kind = kind
     this.status = status
+    this.nonJson = nonJson
   }
 }
 

@@ -6,11 +6,14 @@ interface LooseJson {
 }
 
 /**
- * 探测站点后台类型。
+ * 探测后台类型。
  *
  * 判据取自两端真实存在差异的接口，而不是页面文案：
  * - new-api 有 GET /api/status（sub2api 对该路径返回 404 且不是 JSON）
  * - sub2api 的 GET /api/v1/usage 未登录时返回带 code 的 JSON 401
+ *
+ * 只支持 sub2api，但 new-api 仍要能认出来 —— 否则用户加的是一站 new-api，
+ * 界面只会说「无法识别」，而正确的话是「这一类已经不支持」。
  */
 export async function detectSite(baseUrl: string): Promise<SiteKind | null> {
   const [statusProbe, usageProbe, htmlProbe] = await Promise.allSettled([
@@ -53,7 +56,11 @@ async function fetchText(baseUrl: string): Promise<string> {
   return res.text()
 }
 
-export { sub2apiLogin, sub2apiLoginWithJwt, sub2apiQuery, sub2apiPanelSeed } from './sub2api'
+export {
+  sub2apiLoginWithToken,
+  sub2apiProbeToken,
+  sub2apiQuery,
+  sub2apiPanelSeed
+} from './sub2api'
 export type { PanelSeed } from './sub2api'
-export { newapiLogin, newapiQuery } from './newapi'
 export * from './types'
