@@ -4,7 +4,7 @@ Windows 桌面工具：填 sub2api 站点地址，用内置浏览器登录一次
 
 起因是不少 [sub2api](https://github.com/Wei-Shaw/sub2api) 站点的用量页只给 `总 tokens`，不给缓存率。而它的用户态接口 `/api/v1/usage` 其实四个字段都返回了——工具做的就是把口径统一，然后算给你看。
 
-**下载**：[Releases / v0.2.0](https://github.com/s88868888/sub2api-cache-viewer/releases/tag/v0.2.0)（便携版单文件 105 MiB，无代码签名，首次运行需在 SmartScreen 里点「更多信息 → 仍要运行」）
+**下载**：[Releases / v0.2.1](https://github.com/s88868888/sub2api-cache-viewer/releases/tag/v0.2.1)（便携版单文件 105 MiB，无代码签名，首次运行需在 SmartScreen 里点「更多信息 → 仍要运行」）
 
 ![单站点明细，异常记录按等级标红标黄](docs/screenshots/detail-anomaly.png)
 

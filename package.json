@@ -1,6 +1,6 @@
 {
   "name": "api-show",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "第三方 API 中转站点用量与缓存率查询工具",
   "main": "./out/main/index.js",
   "author": "api-show",
