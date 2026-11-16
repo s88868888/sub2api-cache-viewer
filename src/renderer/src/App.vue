@@ -33,6 +33,8 @@ const groups = ref<GroupOption[]>([])
 const single = ref<QueryResult | null>(null)
 const agg = ref<AggregateResult | null>(null)
 const loading = ref(false)
+/** 这一批数据是什么时候取到的，用来解释「为什么现在显示的不是最新几秒的」 */
+const loadedAt = ref(0)
 const error = ref('')
 const notice = ref('')
 const anomalyOnly = ref(false)
@@ -196,6 +198,10 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / filters.pa
 /** 各站余额互不相通，合并视图没有"总余额"这个概念 */
 const balance = computed(() => (isAll.value ? null : (single.value?.balance ?? null)))
 
+const loadedLabel = computed(() =>
+  loadedAt.value ? `更新于 ${new Date(loadedAt.value).toTimeString().slice(0, 8)}` : ''
+)
+
 onMounted(async () => {
   const saved = await window.apiShow.prefsGet()
   if (saved.ok) {
@@ -283,7 +289,7 @@ function queryFilters() {
 }
 
 /** keepScroll：自动刷新时不劫持滚动位置，否则每分钟把用户视线拽回顶部 */
-async function run(opts: { keepScroll?: boolean } = {}): Promise<void> {
+async function run(opts: { keepScroll?: boolean; force?: boolean } = {}): Promise<void> {
   if (!states.value.length || isCompare.value) return
   loading.value = true
   error.value = ''
@@ -293,19 +299,23 @@ async function run(opts: { keepScroll?: boolean } = {}): Promise<void> {
   if (isAll.value) {
     const res = await window.apiShow.aggregate({
       siteIds: states.value.map((s) => s.profile.id),
-      filters: queryFilters()
+      filters: queryFilters(),
+      force: opts.force
     })
     loading.value = false
-    if (res.ok) agg.value = res.data
-    else fail(res.error.kind, res.error.message)
+    if (res.ok) {
+      agg.value = res.data
+      loadedAt.value = Date.now()
+    } else fail(res.error.kind, res.error.message)
     return
   }
 
   const siteId = selected.value
-  const res = await window.apiShow.query({ siteId, filters: queryFilters() })
+  const res = await window.apiShow.query({ siteId, filters: queryFilters(), force: opts.force })
   loading.value = false
   if (res.ok) {
     single.value = res.data
+    loadedAt.value = Date.now()
     // 查询会自动建立会话，这里补一次连接拿分组列表
     const info = await window.apiShow.connect(siteId)
     if (info.ok) groups.value = info.data.groups
@@ -381,7 +391,7 @@ function startAuto(): void {
       void runCompare()
       return
     }
-    void run({ keepScroll: true })
+    void run({ keepScroll: true, force: true })
     // 已经扫过就让它跟着刷新继续有效；没扫过的不擅自变成全量
     if (scan.value && scanKey.value === currentKey()) void runScan()
   }, refreshSec.value * 1000)
@@ -431,14 +441,19 @@ async function updateCompareTargets(next: CompareTarget[]): Promise<void> {
   await runCompare()
 }
 
-function applyFilter(): void {
+function applyFilter(opts: { force?: boolean } = {}): void {
   if (isCompare.value) {
     void runCompare()
     return
   }
   filters.page = 1
   if (scan.value && scanKey.value !== currentKey()) scan.value = null
-  void run()
+  void run({ force: opts.force })
+}
+
+/** 「查询」是明确的刷新意图，不该拿 60 秒内的缓存答复 */
+function refreshNow(): void {
+  applyFilter({ force: true })
 }
 
 function goto(page: number): void {
@@ -556,14 +571,18 @@ async function remove(id: string): Promise<void> {
         <section class="filters">
           <div v-if="!isCompare" class="field">
             <label>分组</label>
-            <select v-model="filters.groupId" :disabled="isAll || !groups.length" @change="applyFilter">
+            <select
+              v-model="filters.groupId"
+              :disabled="isAll || !groups.length"
+              @change="applyFilter()"
+            >
               <option value="">{{ isAll ? '合并视图不按分组' : '全部分组' }}</option>
               <option v-for="g in groups" :key="g.id" :value="g.id">{{ g.name }}</option>
             </select>
           </div>
           <div class="field">
             <label>时间范围</label>
-            <select v-model="filters.range" @change="applyFilter">
+            <select v-model="filters.range" @change="applyFilter()">
               <option value="today">今天</option>
               <option value="7d">近 7 天</option>
               <option value="30d">近 30 天</option>
@@ -572,7 +591,7 @@ async function remove(id: string): Promise<void> {
           </div>
           <div class="field wide">
             <label>模型（精确匹配）</label>
-            <input v-model="filters.model" placeholder="gpt-6-astra" @keyup.enter="applyFilter" />
+            <input v-model="filters.model" placeholder="gpt-6-astra" @keyup.enter="applyFilter()" />
           </div>
           <!-- 对比是一次性拉满样本的聚合，没有分页概念 -->
           <template v-if="!isCompare">
@@ -612,8 +631,8 @@ async function remove(id: string): Promise<void> {
           <button
             class="btn"
             :disabled="loading || compareLoading"
-            :title="isCompare ? '按当前时间范围重新拉取各站样本' : ''"
-            @click="applyFilter"
+            :title="isCompare ? '按当前时间范围重新拉取各站样本' : '忽略缓存重新拉取当前页'"
+            @click="refreshNow"
           >
             {{ isCompare ? '重新采样' : '查询' }}
           </button>
@@ -699,6 +718,7 @@ async function remove(id: string): Promise<void> {
             <i class="pulse" /> 自动刷新 · 每 {{ refreshSec < 60 ? `${refreshSec} 秒` : `${refreshSec / 60} 分钟` }}
           </span>
           <span v-if="loading" class="loading">加载中…</span>
+          <small v-else-if="loadedLabel" class="dim">{{ loadedLabel }}</small>
         </div>
 
         <UsageTable

@@ -208,25 +208,31 @@ function registerIpc(): void {
     return { seeded: Boolean(cred.seed) }
   })
 
-  handle(IPC.query, async (arg: { siteId: string; filters: QueryFilters }) => {
-    const site = mustGet(arg.siteId)
-    await service.connect(site.id, paramsFor(site))
-    store.markUsed(site.id)
-    return service.query(site.id, arg.filters)
-  })
-
-  handle(IPC.aggregate, async (arg: { siteIds: string[]; filters: QueryFilters }) => {
-    const sites = arg.siteIds.map(mustGet)
-    const targets: Target[] = []
-    for (const site of sites) {
-      targets.push({
-        siteId: site.id,
-        label: site.label,
-        params: paramsFor(site)
-      })
+  handle(
+    IPC.query,
+    async (arg: { siteId: string; filters: QueryFilters; force?: boolean }) => {
+      const site = mustGet(arg.siteId)
+      await service.connect(site.id, paramsFor(site))
+      store.markUsed(site.id)
+      return service.query(site.id, arg.filters, { force: arg.force })
     }
-    return service.aggregate(targets, arg.filters)
-  })
+  )
+
+  handle(
+    IPC.aggregate,
+    async (arg: { siteIds: string[]; filters: QueryFilters; force?: boolean }) => {
+      const sites = arg.siteIds.map(mustGet)
+      const targets: Target[] = []
+      for (const site of sites) {
+        targets.push({
+          siteId: site.id,
+          label: site.label,
+          params: paramsFor(site)
+        })
+      }
+      return service.aggregate(targets, arg.filters, { force: arg.force })
+    }
+  )
 
   /**
    * 对比要列出所有站点的可选分组，所以入参只有已选列和时间范围，

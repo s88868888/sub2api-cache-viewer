@@ -46,11 +46,13 @@ const api = {
   query: (arg: {
     siteId: string
     filters: QueryFilters
+    force?: boolean
   }): Promise<IpcResult<QueryResult>> => ipcRenderer.invoke('site:query', arg),
 
   aggregate: (arg: {
     siteIds: string[]
     filters: QueryFilters
+    force?: boolean
   }): Promise<IpcResult<AggregateResult>> => ipcRenderer.invoke('site:aggregate', arg),
 
   compare: (arg: {

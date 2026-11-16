@@ -77,6 +77,23 @@ export interface ScanInput {
 /** 采样缓存寿命：改选择项时不该重新打接口，但也不能拿着一小时前的数据对比 */
 const SAMPLE_TTL_MS = 60_000
 
+/** 明细页缓存寿命与条数上限：一页明细约 0.5MB，留太多就把内存当磁盘用 */
+const QUERY_TTL_MS = 60_000
+const PAGE_CACHE_MAX = 16
+
+function pageKey(siteId: string, f: QueryFilters): string {
+  return [
+    siteId,
+    f.page,
+    f.pageSize,
+    f.groupId ?? '',
+    f.model ?? '',
+    f.keyword ?? '',
+    f.startMs ?? '',
+    f.endMs ?? ''
+  ].join('|')
+}
+
 interface Active {
   session: SiteSession
   params: LoginParams
@@ -85,6 +102,7 @@ interface Active {
 export class GatewayService {
   private readonly actives = new Map<string, Active>()
   private readonly samples = new Map<string, { at: number; data: Sample }>()
+  private readonly pages = new Map<string, { at: number; data: QueryResult }>()
 
   isConnected(siteId: string): boolean {
     return this.actives.has(siteId)
@@ -147,7 +165,37 @@ export class GatewayService {
     }
   }
 
-  async query(siteId: string, filters: QueryFilters): Promise<QueryResult> {
+  /**
+   * 明细页结果缓存。来回切站点、翻页、改筛选是最常见的动作，
+   * 每次都重打一遍 100 条是「每次加载都太久」的主要来源。
+   * force 由「查询」按钮和自动刷新带上，所以缓存不会让人看到过期数据而不自知。
+   */
+  async query(
+    siteId: string,
+    filters: QueryFilters,
+    opts: { force?: boolean } = {}
+  ): Promise<QueryResult> {
+    // 采样器翻的是 1000 条大页且已有自己的 60 秒样本缓存，
+    // 再进这里只会把只用到一次的整页数据堆在内存里
+    const cacheable = !filters.skipBalance
+    const key = cacheable ? pageKey(siteId, filters) : ''
+    if (cacheable && !opts.force) {
+      const hit = this.pages.get(key)
+      if (hit && Date.now() - hit.at < QUERY_TTL_MS) return hit.data
+    }
+
+    const data = await this.fetchPage(siteId, filters)
+    if (cacheable) {
+      this.pages.set(key, { at: Date.now(), data })
+      while (this.pages.size > PAGE_CACHE_MAX) {
+        const oldest = this.pages.keys().next().value as string
+        this.pages.delete(oldest)
+      }
+    }
+    return data
+  }
+
+  private async fetchPage(siteId: string, filters: QueryFilters): Promise<QueryResult> {
     const active = this.actives.get(siteId)
     if (!active) throw new SiteError('该站点尚未连接', 'auth')
     try {
@@ -171,11 +219,15 @@ export class GatewayService {
    * 并发拉取多个站点。单个站点失败不影响其余站点，
    * 失败原因如实带在结果里，由界面显示而不是静默吞掉。
    */
-  async aggregate(targets: Target[], filters: QueryFilters): Promise<AggregateResult> {
+  async aggregate(
+    targets: Target[],
+    filters: QueryFilters,
+    opts: { force?: boolean } = {}
+  ): Promise<AggregateResult> {
     const settled = await Promise.allSettled(
       targets.map(async (target) => {
         await this.connect(target.siteId, target.params)
-        const result = await this.query(target.siteId, filters)
+        const result = await this.query(target.siteId, filters, opts)
         const session = this.actives.get(target.siteId)!.session
         return {
           siteId: target.siteId,
